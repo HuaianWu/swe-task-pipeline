@@ -58,7 +58,7 @@ def main(argv=None) -> int:
         rec = recs.get(tid)
         if not rec:
             print(tid, "NOT IN records.json"); bad += 1; continue
-        live = src.get(rec["key"])
+        live = src.get(rec.get("record_id") or rec["key"])
         atts = (live.attachments.get("package") if live else None) or []
         if not atts:
             print(rec.get("seq"), tid, "NO ATTACHMENT"); bad += 1; continue

@@ -43,11 +43,13 @@ def main(argv=None) -> int:
     config = Config.load(Path(args.root), {"WORK_DIR": str(work)})
     src = get_source(config)
     recs = {r["task_id"]: r for r in json.loads((work / "records.json").read_text(encoding="utf-8")) if r.get("task_id")}
-    if args.all:
-        state = json.loads((work / "deliver-state.json").read_text(encoding="utf-8")) if (work / "deliver-state.json").exists() else {}
-        ids = [t for t in state if t in recs]
-    else:
-        ids = args.task_ids.split(",") if args.task_ids else []
+    state = json.loads((work / "deliver-state.json").read_text(encoding="utf-8")) if (work / "deliver-state.json").exists() else {}
+    # rows pulled as local-only (title renamed after delivery) carry no record_id: take it from deliver-state
+    for tid, st in state.items():
+        if st.get("record_id"):
+            recs.setdefault(tid, {"task_id": tid, "seq": st.get("seq")})
+            recs[tid].setdefault("record_id", st["record_id"]) if recs[tid].get("record_id") else recs[tid].update(record_id=st["record_id"])
+    ids = [t for t in state if t in recs] if args.all else (args.task_ids.split(",") if args.task_ids else [])
     if not ids:
         ap.error("give task ids or --all")
     opts_file = work / "select-options.json"

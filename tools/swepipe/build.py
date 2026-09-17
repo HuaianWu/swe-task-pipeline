@@ -7,6 +7,8 @@ Per (task, platform):
      PATH and would hide venvs added via ENV PATH) inside `--network none`
   4. delete the image when everything passed; failed images are kept for diagnosis
 Results accumulate in <work>/build-results.json: {task_id: {platform: {status, size_gb, ...}}}.
+Tasks whose Dockerfile + smoke plan are byte-identical (several ledger rows on one upstream commit)
+are verified once: the first is built, the others record the same result with `reused_from`.
 Statuses: ok | build_failed | smoke_failed | error; a failed smoke carries reason = environment | tests | timeout.
 
 Smoke commands: SMOKE by language, or the `smoke` key of the task's task-overrides.json entry.
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import datetime as dt
+import hashlib
 import json
 import platform as platform_module
 import re
@@ -224,6 +227,27 @@ def build_one(task_id: str, platform: str, config: Config, logs: Path, timeout: 
     return result
 
 
+def task_fingerprint(task_dir: Path, overrides_path: Path, platforms: list[str], full_tests: bool) -> str:
+    """Identity of what `build` verifies for a task: the Dockerfile bytes plus the smoke plan and
+    network for every platform.  Tasks with equal fingerprints (same repo, commit and recipe, e.g.
+    several ledger rows on one upstream commit) produce byte-identical images, so one verification
+    covers them all."""
+    h = hashlib.sha256((task_dir / "environment" / "Dockerfile").read_bytes())
+    for p in platforms:
+        h.update(repr(smoke_plan(task_dir, overrides_path, p, full_tests)).encode())
+    h.update(smoke_network(task_dir, overrides_path).encode())
+    return h.hexdigest()[:16]
+
+
+def group_by_fingerprint(todo: list[tuple[str, str]], fingerprints: dict[str, str]) -> dict[tuple[str, str], list[str]]:
+    """{(fingerprint, platform): [task_ids...]} preserving order; the first task of each group is built,
+    the others reuse its result."""
+    groups: dict[tuple[str, str], list[str]] = {}
+    for t, p in todo:
+        groups.setdefault((fingerprints[t], p), []).append(t)
+    return groups
+
+
 def load_results(work: Path) -> dict:
     p = work / "build-results.json"
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
@@ -250,22 +274,50 @@ def run_build(config: Config, task_ids: list[str], platforms: list[str], jobs: i
     results = load_results(work)
     todo = [(t, p) for t in task_ids for p in platforms
             if rebuild or results.get(t, {}).get(p, {}).get("status") != "ok"]
-    print(f"build: {len(todo)} jobs ({len(task_ids)} tasks x {platforms}), {jobs} concurrent", flush=True)
+    fingerprints = {t: task_fingerprint(tasks_dir / t, config.overrides_path, platforms, config.full_tests) for t in task_ids}
     lock = threading.Lock()
+
+    def record(t: str, p: str, res: dict) -> None:
+        res["at"] = dt.datetime.now().isoformat(timespec="seconds")
+        res["fingerprint"] = fingerprints[t]
+        with lock:
+            results.setdefault(t, {})[p] = res
+            results_path.write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
+        extra = f"  smoke={res.get('smoke')}" + (f" ({res['reason']})" if res.get("reason") else "")
+        if res.get("reused_from"):
+            extra += f"  reused from {res['reused_from']}"
+        print(f"  {res['status']:<13} {t:<48} {p:<12} {res.get('size_gb')} GB  {res.get('seconds')}s{extra}", flush=True)
+
+    def reuse(res: dict, t: str, source: str) -> dict:
+        out = {k: v for k, v in res.items() if k not in ("at", "fingerprint")}
+        out.update(task_id=t, tag=f"{config.image_prefix}/{t}:{res['platform'].split('/')[-1]}", reused_from=source)
+        return out
+
+    # An earlier ok result of any task with the same fingerprint (same image, same smoke plan) already
+    # verifies this (task, platform): reuse it instead of building, unless --rebuild.
+    if not rebuild:
+        verified_by = {(r["fingerprint"], p): (tid, r) for tid, per in results.items() for p, r in per.items()
+                       if r.get("status") == "ok" and r.get("fingerprint")}
+        for t, p in list(todo):
+            hit = verified_by.get((fingerprints[t], p))
+            if hit and hit[0] != t:
+                record(t, p, reuse(hit[1], t, hit[0]))
+                todo.remove((t, p))
+    groups = group_by_fingerprint(todo, fingerprints)
+    reps = [(members[0], p) for (_, p), members in groups.items()]
+    print(f"build: {len(reps)} jobs ({len(task_ids)} tasks x {platforms}, {len(todo) - len(reps)} reuse an identical "
+          f"Dockerfile), {jobs} concurrent", flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        futs = {pool.submit(build_one, t, p, config, logs, timeout, keep_images): (t, p) for t, p in todo}
+        futs = {pool.submit(build_one, t, p, config, logs, timeout, keep_images): (t, p) for t, p in reps}
         for fut in concurrent.futures.as_completed(futs):
             t, p = futs[fut]
             try:
                 res = fut.result()
             except Exception as e:  # pragma: no cover
                 res = {"task_id": t, "platform": p, "status": "error", "error": str(e), "size_gb": None, "seconds": 0}
-            res["at"] = dt.datetime.now().isoformat(timespec="seconds")
-            with lock:
-                results.setdefault(t, {})[p] = res
-                results_path.write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
-            extra = f"  smoke={res.get('smoke')}" + (f" ({res['reason']})" if res.get("reason") else "")
-            print(f"  {res['status']:<13} {t:<48} {p:<12} {res.get('size_gb')} GB  {res.get('seconds')}s{extra}", flush=True)
+            record(t, p, res)
+            for other in groups[(fingerprints[t], p)][1:]:
+                record(other, p, reuse(res, other, t))
             if not keep_images:
                 subprocess.run("docker builder prune -f --keep-storage 40GB", shell=True, capture_output=True)
     print(f"results: {results_path}")

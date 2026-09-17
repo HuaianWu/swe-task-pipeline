@@ -88,9 +88,10 @@ FEISHU_TABLE_ID=<table id> $P tools/swepipe.py --work feishu-sync/work-b --tasks
 1. **只处理** `初检结果 == 初检通过` 且交付列为空的行；标题与本地已有 `tasks/*/task.toml` 相同的行复用目录；标题在别处已交付或本批重复的行忽略（表内去重由人工处理）。
 2. **依赖必须钉死**：Dockerfile 里 pip / apt / `go get` 的每个依赖都要精确版本（`pkg==x.y.z`、`pkg=debver`、`mod@vX`）；仓库自己的 `-e .`、`-r` 文件、锁文件安装、`go mod download` 豁免。没有锁文件的 Python 仓库用 `uv pip compile --exclude-newer=<base commit 日期>` 解析。基础镜像钉 digest。`pin_lint.py` 强制执行。
 3. **可运行性**：原生架构在 `--network none` 的容器里跑仓库**自己的真实测试**（Python `pytest`，Go `go test ./...`），3600 s 预算；模拟架构跑轻量冒烟（编译 / 收集）。需要外部服务的仓库把服务装进镜像并在入口脚本里启动；依赖 Docker 守护进程、DNS、外网、root 权限差异的测试**按名跳过并在 Dockerfile 注释里写明原因**。
-4. **只上传验证过的**：每个配置的架构都 `ok` 且镜像 `du` 大小 ≤ `max_image_gb`（默认 12 GB）才上传；过大只在备注前加标记；任一架构失败留到下次重试。
-5. **rubric 类型不猜**：Verify Rubric 条目缺 f2p/p2p 的行（`rubric_untyped`）、「产物结果」没有逐条记录的行（`result_unstructured`）不打包，退回提交人补。
-6. **instruction.md 保持中文原文**，逐字来自「需求 Prompt（原文）」列。
+4. **相同环境只验证一次**：Dockerfile 与冒烟计划完全相同的任务（同一仓库、同一 commit、同一配方的多行）只构建、测试一次，其余行记录同一结果并标 `reused_from`；`--rebuild` 时每组也只重建一次。
+5. **只上传验证过的**：每个配置的架构都 `ok` 且镜像 `du` 大小 ≤ `max_image_gb`（默认 12 GB）才上传；过大只在备注前加标记；任一架构失败留到下次重试。
+6. **rubric 类型不猜**：Verify Rubric 条目缺 f2p/p2p 的行（`rubric_untyped`）、「产物结果」没有逐条记录的行（`result_unstructured`）不打包，退回提交人补。
+7. **instruction.md 保持中文原文**，逐字来自「需求 Prompt（原文）」列。
 
 ## 配置
 

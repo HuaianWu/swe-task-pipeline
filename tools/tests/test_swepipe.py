@@ -12,6 +12,7 @@ TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
 import zipfile  # noqa: E402
 
+from swepipe.build import group_by_fingerprint, task_fingerprint  # noqa: E402
 from swepipe.config import Config  # noqa: E402
 from swepipe.ledger import load_records, write_ledger  # noqa: E402
 from swepipe.package import build_package, render_task_toml, safe_dirname  # noqa: E402
@@ -21,9 +22,27 @@ from swepipe.sources import get_source  # noqa: E402
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
+def test_fingerprint_dedupe(root: Path) -> None:
+    """Rows sharing a Dockerfile + smoke plan collapse to one build; a different smoke plan splits them."""
+    tasks = root / "fp"
+    for name, smoke in (("a-1", "x"), ("a-2", "x"), ("b-1", "y")):
+        (tasks / name / "environment").mkdir(parents=True)
+        (tasks / name / "environment" / "Dockerfile").write_text("FROM scratch\nRUN true\n")
+        (tasks / name / "task.toml").write_text('language = "go"\n')
+    ov = root / "fp-ov.json"
+    ov.write_text(json.dumps({"s1": {"task_id": "a-1", "smoke": "x"}, "s2": {"task_id": "a-2", "smoke": "x"},
+                              "s3": {"task_id": "b-1", "smoke": "y"}}))
+    plats = ["linux/arm64", "linux/amd64"]
+    fps = {n: task_fingerprint(tasks / n, ov, plats, True) for n in ("a-1", "a-2", "b-1")}
+    assert fps["a-1"] == fps["a-2"] != fps["b-1"], fps
+    groups = group_by_fingerprint([(n, p) for n in ("a-1", "a-2", "b-1") for p in plats], fps)
+    assert len(groups) == 4 and groups[(fps["a-1"], plats[0])] == ["a-1", "a-2"], groups
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
+        test_fingerprint_dedupe(root)
         tasks = root / "tasks"
         (tasks / "demo-existing").mkdir(parents=True)
         (tasks / "demo-existing" / "task.toml").write_text('original_title = "已有 任务"\nrepository_url = "https://github.com/x/y"\n'

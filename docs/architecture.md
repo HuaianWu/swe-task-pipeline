@@ -39,7 +39,7 @@ tools/swepipe/
 
 1. **pull**：`select.py` 按顺序判定每行——非候选忽略；备注以跳过标记开头忽略；标题（去空白、忽略大小写）匹配本地任务目录 → `existing`（复用目录，只构建上传）；标题在别的行已有产物 → 重复忽略；本批内重复 → 忽略；否则 `new`。zip 模式下 `task_id = <仓库名>-<source_id 前 6 位>` 自动生成；repo 模式需要人在 overrides 里补英文 `task_id / display_title / display_description`（`overrides.stub.json` 列出缺的行）。
 2. **gen**：生成器浅克隆仓库到 `REPOS_DIR`，校验 base commit 在默认分支上，检测构建方式（pyproject / setup.py / requirements / uv.lock / poetry / go.mod / Cargo / package.json），解析钉死依赖，按 `templates/` 渲染三件套。overrides 里的 `install_block` 整段替换依赖安装段。生成后立即 `pin_lint`。
-3. **build**：先按「Dockerfile 字节 + 各平台冒烟计划 + 冒烟网络」给每个任务算指纹，指纹相同的任务只构建一个代表，其余直接复用结果（`build-results.json` 里带 `reused_from` 和 `fingerprint`）；以前跑过的同指纹结果也会被复用，`--rebuild` 时每组重建一次。然后对每个 (任务, 平台) 依次 `docker build`（网络类错误自动重试 4 次）、容器内 `du` 量大小、在 `--network none`（或 `--internal` 网络）容器里用 `bash -c` 跑冒烟命令（3600 s 预算）、通过即删镜像。冒烟计划在任务**开始**时从 overrides 读取：原生平台默认跑完整测试，模拟平台默认轻量冒烟，`smoke` 覆盖项优先。失败分类：`environment`（连不上服务、缺模块、DNS、找不到 docker）、`tests`（用例本身红）、`timeout`。
+3. **build**：先按「Dockerfile 字节 + 各平台冒烟计划 + 冒烟网络」给每个任务算指纹，指纹相同的任务只构建一个代表，其余直接复用结果（`build-results.json` 里带 `reused_from` 和 `fingerprint`）；以前跑过的同指纹结果也会被复用，`--rebuild` 时每组重建一次。每个 docker 主机一个工作池（本机 `jobs`，远端 `jobs_<arch>`），互不占用槽位。然后对每个 (任务, 平台) 依次 `docker build`（网络类错误自动重试 4 次）、容器内 `du` 量大小、在 `--network none`（或 `--internal` 网络）容器里用 `bash -c` 跑冒烟命令（3600 s 预算）、通过即删镜像。冒烟计划在任务**开始**时从 overrides 读取：原生平台默认跑完整测试，模拟平台默认轻量冒烟，`smoke` 覆盖项优先。失败分类：`environment`（连不上服务、缺模块、DNS、找不到 docker）、`tests`（用例本身红）、`timeout`。
 4. **deliver**：对 `build-results.json` 里每个平台都 ok 且大小达标的行，实时读取该行（防止台账已改），下载 patch / 轨迹 / 截图，规范化 rubric 与产物结果，写 16 键 `task.toml`，打成 `<题目名称>.zip`，跑 `package_check`，上传并挂到附件列，记入 `deliver-state.json`。
 5. **verify_attachments**：独立复核，从台账重新下载附件跑体检。
 

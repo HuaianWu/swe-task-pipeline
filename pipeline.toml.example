@@ -21,7 +21,11 @@ visibility = "public"
 # run the repository's real tests offline on the native platform (the client's runnability bar)
 full_tests = true
 platforms = ["linux/arm64", "linux/amd64"]   # a host that cannot emulate arm64 lists only linux/amd64
-jobs = 3
+jobs = 3                   # concurrent builds on the local daemon
+# Build + smoke-test one platform natively on another docker host (docker over ssh, passwordless root/user):
+# that platform then runs the full test suite there instead of the light emulated smoke, with its own concurrency.
+# docker_host_amd64 = "ssh://root@x86-box"
+# jobs_amd64 = 4
 # true = build RUN steps bypass the proxy Docker Desktop injects (the host proxy drops
 # concurrent TLS handshakes to GitHub); leave false on hosts that need the proxy.
 direct = false

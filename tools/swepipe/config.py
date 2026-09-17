@@ -17,8 +17,11 @@ Keys (environment / .env spelling; pipeline.toml uses lower-case sections, see t
                          local `gh auth login` account is not needed and can differ
   GITHUB_VISIBILITY      public | private                   (default public)
   PLATFORMS              comma list                         (default linux/arm64,linux/amd64)
-  BUILD_JOBS             concurrent docker builds           (default 3)
+  BUILD_JOBS             concurrent docker builds per host  (default 3); BUILD_JOBS_<ARCH> overrides it
+                         for the host that builds that platform (e.g. BUILD_JOBS_AMD64=4 for the x86 box)
   BUILD_DIRECT           1 = bypass the proxy Docker injects into builds (default 0)
+  DOCKER_HOST_<ARCH>     docker endpoint for that platform, e.g. DOCKER_HOST_AMD64=ssh://root@x86-box
+                         (builds + smokes of linux/amd64 run there and count as native)
   MAX_IMAGE_GB           skip + mark rows above this size   (default 12)
   IMAGE_PREFIX           local docker tag prefix            (default swe-task-pipeline)
   CLOUD_AGENT_URL, CLOUD_AGENT_TOKEN   optional x86 verification host (tools/cloud_agent.py)
@@ -139,6 +142,13 @@ class Config:
     def build_jobs(self) -> int:
         return int(self.get("BUILD_JOBS", "3"))
 
+    def build_jobs_for(self, platform: str, default: int | None = None) -> int:
+        """Concurrent builds for one platform's docker host: BUILD_JOBS_<ARCH> ([build] jobs_amd64 = 4),
+        else the general BUILD_JOBS / --jobs value.  Platforms on the same host share one pool."""
+        arch = platform.split("/")[-1].upper()
+        v = self.get(f"BUILD_JOBS_{arch}")
+        return int(v) if v else (default if default is not None else self.build_jobs)
+
     @property
     def full_tests(self) -> bool:
         """Run the repository's real test suite offline on the native platform (FULL_TESTS, default on)."""
@@ -148,6 +158,13 @@ class Config:
     def build_direct(self) -> bool:
         """Pass empty HTTP(S)_PROXY build-args so RUN steps skip the proxy Docker Desktop injects."""
         return str(self.get("BUILD_DIRECT", "0")).lower() in ("1", "true", "yes")
+
+    def docker_host(self, platform: str) -> str | None:
+        """Docker endpoint for one platform's builds and smokes, e.g. DOCKER_HOST_AMD64=ssh://root@x86-box
+        ([build] docker_host_amd64 in pipeline.toml).  Unset = the local daemon.  A platform with its own
+        host is treated as native there (the full test suite runs instead of the light emulated smoke)."""
+        arch = platform.split("/")[-1].upper()
+        return self.get(f"DOCKER_HOST_{arch}") or self.get(f"BUILD_DOCKER_HOST_{arch}")
 
     @property
     def max_image_gb(self) -> float:
@@ -173,5 +190,5 @@ class Config:
         secret = ("SECRET", "TOKEN")
         shown = {k: ("***" if any(s in k for s in secret) else v) for k, v in sorted(self.values.items())
                  if k.startswith(("SOURCE", "DELIVERY", "FEISHU_", "JSON_", "GITHUB_", "GH_", "PLATFORMS", "BUILD_", "MAX_IMAGE",
-                                  "IMAGE_PREFIX", "CLOUD_AGENT_", "TASKS_DIR", "WORK_DIR", "OVERRIDES", "REPOS_DIR"))}
+                                  "IMAGE_PREFIX", "DOCKER_HOST_", "CLOUD_AGENT_", "TASKS_DIR", "WORK_DIR", "OVERRIDES", "REPOS_DIR"))}
         return "\n".join(f"  {k}={v}" for k, v in shown.items())

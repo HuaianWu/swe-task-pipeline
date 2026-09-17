@@ -101,12 +101,13 @@ FEISHU_TABLE_ID=<table id> $P tools/swepipe.py --work feishu-sync/work-b --tasks
 - 换交付模式：`[delivery] mode = "zip" | "repo"`。
 - repo 模式换账号：`.env` 里设 `GITHUB_TOKEN`（需要 `repo` 权限）与 `GITHUB_OWNER`；不设则用本机 `gh auth login` 的账号。
 - 只能构建一种架构的机器：`PLATFORMS=linux/amd64`。
+- 有另一架构的服务器时（装好 Docker、免密 ssh）：`[build] docker_host_amd64 = "ssh://root@x86-box"`、`jobs_amd64 = 4`。该架构的构建与冒烟通过 docker-over-ssh 在那台机器上原生执行（跑完整测试，不再模拟），并使用独立的并发上限；本机只负责另一架构。
 - 本机代理不稳时：`[build] direct = true`，构建的 RUN 步骤绕开 Docker Desktop 注入的代理。
 - `FULL_TESTS=0` 临时退回全部轻量冒烟（只用于排查，交付前必须恢复）。
 
 ## 运行环境与资源
 
-脚本没有平台假设。目前在 Apple Silicon Mac 上运行：arm64 原生，amd64 走 Rosetta 模拟（慢 2–3 倍）。Docker VM 内存 8 GB 左右时：`build --jobs 2` 是上限，大型 Go / Python 套件用 `--jobs 1`；构建进行时不要再起诊断容器（会把并发的模拟架构编译 OOM 掉，exit 137）。通过的镜像会自动删除，失败的保留供排查；`docker builder prune` 自动运行，保留 40 GB 缓存。
+脚本没有平台假设。目前在 Apple Silicon Mac 上运行 arm64，amd64 交给一台 x86 服务器（`docker_host_amd64`）原生构建；没有服务器时 amd64 走 Rosetta 模拟（慢 2–3 倍，Erlang 等无法运行）。Docker VM 内存 8 GB 左右时：`build --jobs 2` 是上限，大型 Go / Python 套件用 `--jobs 1`；构建进行时不要再起诊断容器（会把并发的模拟架构编译 OOM 掉，exit 137）。通过的镜像会自动删除，失败的保留供排查；`docker builder prune` 自动运行，保留 40 GB 缓存。
 
 ## 自检
 

@@ -1,4 +1,4 @@
-"""build: docker build + smoke test + size for every task and platform, N concurrent.
+"""build: docker build + smoke test + size for every task and platform, N concurrent per docker host.
 
 Per (task, platform):
   1. `docker build --platform <p> -t <IMAGE_PREFIX>/<task_id>:<arch> tasks/<task_id>/environment`
@@ -19,6 +19,7 @@ import concurrent.futures
 import datetime as dt
 import hashlib
 import json
+import os
 import platform as platform_module
 import re
 import shlex
@@ -47,14 +48,19 @@ SMOKE = {
 }
 
 
-def sh(cmd: str, log, timeout: int | None = None) -> int:
+def sh(cmd: str, log, timeout: int | None = None, docker_host: str | None = None) -> int:
     log.write(f"\n$ {cmd}\n")
     log.flush()
+    env = dict(os.environ, DOCKER_HOST=docker_host) if docker_host else None
     try:
-        return subprocess.run(cmd, shell=True, stdout=log, stderr=subprocess.STDOUT, timeout=timeout).returncode
+        return subprocess.run(cmd, shell=True, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, env=env).returncode
     except subprocess.TimeoutExpired:
         log.write(f"\nTIMEOUT after {timeout}s\n")
         return 124
+
+
+def docker_env(docker_host: str | None) -> dict | None:
+    return dict(os.environ, DOCKER_HOST=docker_host) if docker_host else None
 
 
 def parse_size_gb(text: str) -> float | None:
@@ -62,21 +68,21 @@ def parse_size_gb(text: str) -> float | None:
     return round(float(m.group(1)) * {"B": 1e-9, "kB": 1e-6, "MB": 1e-3, "GB": 1.0, "TB": 1e3}[m.group(2)], 2) if m else None
 
 
-def image_disk_gb(tag: str, platform: str, log) -> float | None:
+def image_disk_gb(tag: str, platform: str, log, docker_host: str | None = None) -> float | None:
     """Unpacked filesystem size measured with du inside a container (docker's own size numbers
     depend on the image store and unpack state, so they are not comparable across builds)."""
     cmd = (f"docker run --rm --network none --platform {platform} {tag} "
            "du -sxk / --exclude=/proc --exclude=/sys --exclude=/dev 2>/dev/null | cut -f1")
     log.write(f"\n$ {cmd}\n")
     try:
-        out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=900)
+        out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=900, env=docker_env(docker_host))
     except subprocess.TimeoutExpired:
         return None
     digits = re.findall(r"\d+", out.stdout)
     gb = round(int(digits[-1]) / 1e6, 2) if digits else None
     log.write(f"disk usage: {gb} GB\n")
     if gb is None:
-        images = subprocess.run(["docker", "images", "--format", "{{.Size}}", tag], capture_output=True, text=True)
+        images = subprocess.run(["docker", "images", "--format", "{{.Size}}", tag], capture_output=True, text=True, env=docker_env(docker_host))
         gb = parse_size_gb(images.stdout.strip().splitlines()[0]) if images.stdout.strip() else None
     return gb
 
@@ -96,7 +102,7 @@ def smoke_overrides(overrides_path: Path) -> dict[str, str | dict]:
 INTERNAL_NETWORK = "swepipe-internal"   # docker network created with --internal: a NIC, no route out
 
 
-def smoke_network(task_dir: Path, overrides_path: Path) -> str:
+def smoke_network(task_dir: Path, overrides_path: Path, docker_host: str | None = None, create: bool = True) -> str:
     """`--network` value for the smoke container: `none` unless the task's override sets
     smoke_network = "internal" (suites that need a non-loopback interface, e.g. pion/ice, still
     run offline on a docker network created with --internal)."""
@@ -105,8 +111,10 @@ def smoke_network(task_dir: Path, overrides_path: Path) -> str:
     data = json.loads(overrides_path.read_text(encoding="utf-8"))
     for v in data.values():
         if isinstance(v, dict) and v.get("task_id") == task_dir.name and v.get("smoke_network") == "internal":
-            subprocess.run(["docker", "network", "inspect", INTERNAL_NETWORK], capture_output=True) .returncode == 0 or \
-                subprocess.run(["docker", "network", "create", "--internal", INTERNAL_NETWORK], capture_output=True)
+            if create:
+                env = docker_env(docker_host)
+                subprocess.run(["docker", "network", "inspect", INTERNAL_NETWORK], capture_output=True, env=env).returncode == 0 or \
+                    subprocess.run(["docker", "network", "create", "--internal", INTERNAL_NETWORK], capture_output=True, env=env)
             return INTERNAL_NETWORK
     return "none"
 
@@ -140,17 +148,26 @@ def native_platform() -> str:
     return "linux/arm64" if m in ("arm64", "aarch64") else "linux/amd64"
 
 
+# Platforms built on a docker host of their own architecture (DOCKER_HOST_<ARCH>) run natively there,
+# so they get the full smoke like the local native platform.  Filled in by run_build.
+REMOTE_NATIVE: set[str] = set()
+
+
+def is_native(platform: str) -> bool:
+    return platform == native_platform() or platform in REMOTE_NATIVE
+
+
 def smoke_plan(task_dir: Path, overrides_path: Path, platform: str, full_tests: bool) -> tuple[str, str]:
     """(kind, command) for this platform: an explicit override wins everywhere; otherwise the native
     platform runs the full suite and the emulated one the light smoke."""
     override = smoke_overrides(overrides_path).get(task_dir.name)
     if isinstance(override, dict):
         # {"native": cmd, "emulated": cmd}: heavy suites run only where they are fast enough
-        override = override.get("native" if platform == native_platform() else "emulated")
+        override = override.get("native" if is_native(platform) else "emulated")
     if override:
         return "override", override
     lang = task_language(task_dir)
-    if full_tests and platform == native_platform() and lang in SMOKE_FULL:
+    if full_tests and is_native(platform) and lang in SMOKE_FULL:
         return "full", SMOKE_FULL[lang]
     return "light", SMOKE.get(lang, "true")
 
@@ -181,14 +198,19 @@ def build_one(task_id: str, platform: str, config: Config, logs: Path, timeout: 
     tag = f"{config.image_prefix}/{task_id}:{arch}"
     task_dir = config.tasks_dir / task_id
     started = time.time()
+    dh = config.docker_host(platform)
     result = {"task_id": task_id, "platform": platform, "tag": tag, "status": "build_failed",
               "size_gb": None, "seconds": 0, "log": str(logs / f"{task_id}-{arch}.log")}
+    if dh:
+        result["docker_host"] = dh
     # Docker Desktop forwards the host proxy into every RUN step; when that proxy is flaky the
     # empty predefined build-args make the build go direct (measured 6/6 vs 2/12 on 2026-09-09).
     proxy_args = " --build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= --build-arg http_proxy= --build-arg https_proxy=" if config.build_direct else ""
     with open(result["log"], "w", encoding="utf-8") as log:
+        if dh:
+            log.write(f"DOCKER_HOST={dh} (native {platform} host)\n")
         for attempt in range(1, NETWORK_RETRIES + 2):
-            rc = sh(f"docker build --platform {platform} --progress=plain{proxy_args} -t {tag} {task_dir / 'environment'}", log, timeout)
+            rc = sh(f"docker build --platform {platform} --progress=plain{proxy_args} -t {tag} {task_dir / 'environment'}", log, timeout, dh)
             if rc == 0 or attempt > NETWORK_RETRIES:
                 break
             log.flush()
@@ -199,23 +221,23 @@ def build_one(task_id: str, platform: str, config: Config, logs: Path, timeout: 
             log.flush()
             time.sleep(NETWORK_BACKOFF)
         if rc == 0:
-            result["size_gb"] = image_disk_gb(tag, platform, log)
+            result["size_gb"] = image_disk_gb(tag, platform, log, dh)
             kind, smoke = smoke_plan(task_dir, config.overrides_path, platform, config.full_tests)
             result["smoke"] = kind
             log.write(f"\nSMOKE ({kind}): {smoke}\n")
             # Named so a timeout can remove the container: killing the docker client alone leaves the
             # test process running inside the VM, eating the memory of the builds that follow.
             cname = f"smoke-{task_dir.name}-{arch}"
-            subprocess.run(["docker", "rm", "-f", cname], capture_output=True)
-            net = smoke_network(task_dir, config.overrides_path)
+            subprocess.run(["docker", "rm", "-f", cname], capture_output=True, env=docker_env(dh))
+            net = smoke_network(task_dir, config.overrides_path, dh)
             if net != "none":
                 log.write(f"SMOKE NETWORK: {net} (docker --internal network: interface present, no route out)\n")
             rc = sh(f"docker run --rm --name {cname} --network {net} --platform {platform} {tag} bash -c "
                     # 3600 s: `go build ./...` of large Go trees (toolhive, bigquery-emulator) exceeds
                     # 30 min under amd64 emulation when sharing the VM with two other builds.
-                    f"{shlex.quote('set -o pipefail; ' + smoke)}", log, 3600)
+                    f"{shlex.quote('set -o pipefail; ' + smoke)}", log, 3600, dh)
             if rc == 124:
-                subprocess.run(["docker", "rm", "-f", cname], capture_output=True)
+                subprocess.run(["docker", "rm", "-f", cname], capture_output=True, env=docker_env(dh))
             result["status"] = "ok" if rc == 0 else "smoke_failed"
             if rc != 0:
                 log.flush()
@@ -223,7 +245,7 @@ def build_one(task_id: str, platform: str, config: Config, logs: Path, timeout: 
         result["seconds"] = int(time.time() - started)
         log.write(f"\nRESULT {result['status']} size={result['size_gb']}GB {result['seconds']}s\n")
         if not keep and result["status"] == "ok":
-            subprocess.run(["docker", "rmi", "-f", tag], capture_output=True)
+            subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, env=docker_env(dh))
     return result
 
 
@@ -235,7 +257,7 @@ def task_fingerprint(task_dir: Path, overrides_path: Path, platforms: list[str],
     h = hashlib.sha256((task_dir / "environment" / "Dockerfile").read_bytes())
     for p in platforms:
         h.update(repr(smoke_plan(task_dir, overrides_path, p, full_tests)).encode())
-    h.update(smoke_network(task_dir, overrides_path).encode())
+    h.update(smoke_network(task_dir, overrides_path, create=False).encode())
     return h.hexdigest()[:16]
 
 
@@ -272,6 +294,11 @@ def run_build(config: Config, task_ids: list[str], platforms: list[str], jobs: i
         sys.exit(f"{len(unpinned)} task(s) violate the pinning rule; fix the Dockerfile before building")
     results_path = work / "build-results.json"
     results = load_results(work)
+    REMOTE_NATIVE.clear()
+    for p in platforms:
+        if config.docker_host(p) and p != native_platform():
+            REMOTE_NATIVE.add(p)
+            print(f"platform {p}: built and smoke-tested natively on {config.docker_host(p)}", flush=True)
     todo = [(t, p) for t in task_ids for p in platforms
             if rebuild or results.get(t, {}).get(p, {}).get("status") != "ok"]
     fingerprints = {t: task_fingerprint(tasks_dir / t, config.overrides_path, platforms, config.full_tests) for t in task_ids}
@@ -305,10 +332,17 @@ def run_build(config: Config, task_ids: list[str], platforms: list[str], jobs: i
                 todo.remove((t, p))
     groups = group_by_fingerprint(todo, fingerprints)
     reps = [(members[0], p) for (_, p), members in groups.items()]
+    # One worker pool per docker host: the local daemon and each DOCKER_HOST_<ARCH> box run their own
+    # jobs in parallel, sized by BUILD_JOBS / BUILD_JOBS_<ARCH> (--jobs is the local default).
+    host_of = {p: (config.docker_host(p) or "local") for p in platforms}
+    workers: dict[str, int] = {}
+    for p in platforms:
+        workers[host_of[p]] = max(workers.get(host_of[p], 0), config.build_jobs_for(p, jobs if host_of[p] == "local" else None))
     print(f"build: {len(reps)} jobs ({len(task_ids)} tasks x {platforms}, {len(todo) - len(reps)} reuse an identical "
-          f"Dockerfile), {jobs} concurrent", flush=True)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        futs = {pool.submit(build_one, t, p, config, logs, timeout, keep_images): (t, p) for t, p in reps}
+          f"Dockerfile); concurrency " + ", ".join(f"{h}={n}" for h, n in workers.items()), flush=True)
+    pools = {h: concurrent.futures.ThreadPoolExecutor(max_workers=n) for h, n in workers.items()}
+    try:
+        futs = {pools[host_of[p]].submit(build_one, t, p, config, logs, timeout, keep_images): (t, p) for t, p in reps}
         for fut in concurrent.futures.as_completed(futs):
             t, p = futs[fut]
             try:
@@ -319,6 +353,10 @@ def run_build(config: Config, task_ids: list[str], platforms: list[str], jobs: i
             for other in groups[(fingerprints[t], p)][1:]:
                 record(other, p, reuse(res, other, t))
             if not keep_images:
-                subprocess.run("docker builder prune -f --keep-storage 40GB", shell=True, capture_output=True)
+                subprocess.run("docker builder prune -f --keep-storage 40GB", shell=True, capture_output=True,
+                               env=docker_env(config.docker_host(p)))
+    finally:
+        for pool in pools.values():
+            pool.shutdown(wait=True)
     print(f"results: {results_path}")
     return 0 if all(verified(results, t, platforms) for t in task_ids) else 1

@@ -1,0 +1,5 @@
+# Python >= 3.10.  Install into a project venv:  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+openpyxl>=3.1          # ledger.xlsx (pull -> gen hand-off)
+pyyaml>=6.0            # tests/nl_rubric.yaml rendering and package_check
+packaging>=24.0        # PEP 508 marker evaluation when pruning uv/pip pins (xlsx2task)
+tomli>=2.0; python_version < "3.11"   # pipeline.toml on Python 3.10

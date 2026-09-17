@@ -1,0 +1,8 @@
+# {install_comment}
+RUN pip install --no-cache-dir \
+{pinned_lines}
+    && pip install --no-cache-dir --no-deps -e . \
+    && test -z "$(git status --porcelain)"
+
+# v1.1 node-id scoring: pytest ships a native JUnit XML reporter (--junitxml),
+# so no extra reporter dependency is required.

@@ -1,0 +1,35 @@
+# Non-secret defaults for tools/swepipe.py.  Copy to pipeline.toml (committed) and put secrets in .env.
+# Precedence: command-line flags > environment variables > .env > pipeline.toml > built-in defaults.
+
+[source]
+type = "feishu"            # feishu | json   (see docs/source-adapters.md to add a database / API)
+# json_path = "feishu-sync/work/source.json"   # only for type = "json"
+
+[feishu]                   # ids are not secrets; FEISHU_APP_ID / FEISHU_APP_SECRET go in .env
+base_token = "<bitable app token from the URL>"
+table_id = "<table id from the URL>"   # the ledger table (zip mode); a repo-mode table uses its own id
+
+[delivery]
+mode = "zip"               # zip: <题目名称>.zip attached to the row's 交付包（zip） column (deliver)
+                           # repo: GitHub repo per task, URL written to "SWE-like Image Repo URL" (publish)
+
+[github]
+owner = "your-github-user"   # user or org that owns the task repos (repo mode); GITHUB_TOKEN in .env switches accounts
+visibility = "public"
+
+[build]
+# run the repository's real tests offline on the native platform (the client's runnability bar)
+full_tests = true
+platforms = ["linux/arm64", "linux/amd64"]   # a host that cannot emulate arm64 lists only linux/amd64
+jobs = 3
+# true = build RUN steps bypass the proxy Docker Desktop injects (the host proxy drops
+# concurrent TLS handshakes to GitHub); leave false on hosts that need the proxy.
+direct = false
+max_image_gb = 12          # verified images above this are not uploaded; the row gets a remark marker
+image_prefix = "swe-task-pipeline"
+
+[paths]                    # relative to this directory
+tasks = "tasks"
+work = "feishu-sync/work-zip"   # one work dir per table/mode (state files, downloads, logs)
+overrides = "task-overrides.json"
+repos = "feishu-sync/_repos"

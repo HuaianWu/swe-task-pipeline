@@ -1,0 +1,11 @@
+{
+ "example-repo-a1b2c3": {
+  "_note": "Upstream CI (.github/workflows/test.yml) installs redis-server and runs `go test -p 1 ./...`; TestResolveDNS needs DNS and is skipped offline.",
+  "install_block": "RUN go mod download\n# Debian 12 version resolved inside mars-base on 2026-09-15\nRUN apt-get update \\\n    && apt-get install -y --no-install-recommends redis-server=5:7.0.15-1~deb12u9 \\\n    && rm -rf /var/lib/apt/lists/*\n# Skipped offline: TestResolveDNS resolves a public hostname (no DNS inside the delivery container)\n",
+  "smoke": {
+   "native": "{ redis-server --daemonize yes && go test -p 1 -count=1 -timeout 30m ./... -skip '^TestResolveDNS$'; } > /tmp/gotest.log 2>&1; rc=$?; grep -E '^(FAIL|--- FAIL|panic)' /tmp/gotest.log | head -n 30; tail -n 8 /tmp/gotest.log; exit $rc",
+   "emulated": "go build ./... && go vet ./... 2>&1 | tail -n 20"
+  },
+  "smoke_network": "none"
+ }
+}

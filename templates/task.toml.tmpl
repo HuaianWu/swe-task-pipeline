@@ -1,0 +1,48 @@
+schema_version = "1.3"
+artifacts = ["/logs/artifacts/model.patch"]
+[task]
+name = "{org}/{task_id}"
+description = ""
+authors = []
+keywords = []
+[metadata]
+ext_id = "{ext_id}"
+task_id = "{task_id}"
+display_title = "{display_title}"
+display_description = "{display_description}"
+original_title = "{original_title}"
+category = "{category}"
+language = "{language}"
+repository_url = "{repository_url}"
+base_commit_hash = "{base_commit_hash}"
+[verifier]
+network_mode = "no-network"
+environment_mode = "separate"
+timeout_sec = 1800.0
+
+[verifier.env]
+[verifier.environment]
+build_timeout_sec = 1800.0
+cpus = 2
+memory_mb = 8192
+storage_mb = 20480
+
+[[verifier.collect]]
+command = "cd /app && mkdir -p /logs/artifacts && git config --global --add safe.directory /app && git diff --binary {base_commit_hash} HEAD > /logs/artifacts/model.patch"
+timeout_sec = 300.0
+
+[agent]
+network_mode = "no-network"
+timeout_sec = 10800.0
+[environment]
+build_timeout_sec = 1800.0
+{docker_image_line}
+os = "linux"
+cpus = 2
+memory_mb = 8192
+storage_mb = 20480
+gpus = 0
+mcp_servers = []
+
+[environment.env]
+[solution.env]

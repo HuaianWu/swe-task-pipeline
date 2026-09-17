@@ -1,0 +1,25 @@
+{
+ "records": [
+  {
+   "key": "1",
+   "seq": "1",
+   "title": "restic find 按文件大小过滤",
+   "repo_url": "https://github.com/restic/restic",
+   "base_sha": "0123456789abcdef0123456789abcdef01234567",
+   "language": "Go",
+   "task_type": "功能新增",
+   "prompt": "给 restic find 增加 --size 过滤参数……（需求原文，逐字进入 instruction.md）",
+   "rubric": "1. [f2p] 支持 --size +10M 语法\n2. [f2p] 单位解析错误时给出明确报错\n3. [p2p] 现有 find 测试全部保持通过\n4. [f2p] 组合 --size 与 --name 时取交集\n5. [p2p] 文档更新",
+   "review": "初检通过",
+   "remark": "",
+   "output_url": "",
+   "submitter": "示例提交人",
+   "submitted_at": "2026-09-01",
+   "attachments": {
+    "patch_file": [{"path": "/absolute/path/to/model.patch"}],
+    "trajectory_url": [{"url": "https://example.com/trajectory.jsonl"}],
+    "screenshot_url": [{"url": "https://example.com/proof-1.png"}]
+   }
+  }
+ ]
+}

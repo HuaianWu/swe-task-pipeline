@@ -1,0 +1,17 @@
+# secrets and per-host configuration
+.env
+pipeline.toml
+
+# pipeline state, downloads, clones (large; contains ledger data and attachments)
+feishu-sync/
+work*/
+
+# generated task directories (per-ledger output, not source)
+tasks/
+tasks*/
+
+# local tooling
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,4 @@
+RUN go mod download
+# v1.1 node-id scoring: `go test -json` is converted by the official CTRF reporter.
+RUN go install github.com/ctrf-io/go-ctrf-json-reporter/cmd/go-ctrf-json-reporter@v0.1.0
+ENV PATH="/root/go/bin:${PATH}"
